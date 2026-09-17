@@ -51,7 +51,7 @@ index beb05039926e1fb7a656dfcd0c503f82db67fc46..256c9b8abd9c692b942e3be5d3aab0fe
              net.minecrell.terminalconsole.TerminalConsoleAppender.close(); // Paper - Use TerminalConsoleAppender
          } catch (Exception e) {
 diff --git a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-index 36af81f0957d17e170d229059c66f4eb4539dfeb..1dd0c53d464947b2d321b83917a8634cce37372b 100644
+index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736df0176779 100644
 --- a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
 +++ b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
 @@ -4,48 +4,238 @@ import com.mojang.datafixers.DataFixer;
@@ -376,7 +376,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..1dd0c53d464947b2d321b83917a8634c
              int i = NbtUtils.getDataVersion(nbttagcompound, -1);
  
              player.load(ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, nbttagcompound, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion())); // Paper - replace player converter
-@@ -99,41 +279,45 @@ public class PlayerDataStorage {
+@@ -99,41 +279,49 @@ public class PlayerDataStorage {
          return nbttagcompound;
      }
  
@@ -392,7 +392,9 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..1dd0c53d464947b2d321b83917a8634c
 +        try {
 +            byte[] data = get(defaultColumnFamily, getBytesFromUuid(uuid));
 +            if (data == null) return null;
-+            return NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
++            CompoundTag playerData = NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
++            int i = NbtUtils.getDataVersion(playerData, -1);
++            return ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, playerData, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion());
          } catch (Exception exception) {
 -            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + s);
 +            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + uuid);
@@ -413,7 +415,9 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..1dd0c53d464947b2d321b83917a8634c
 +            if (handle == null) return null;
 +            byte[] data = get(handle, getBytesFromUuid(uuid));
 +            if (data == null) return null;
-+            return NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
++            CompoundTag playerData = NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
++            int i = NbtUtils.getDataVersion(playerData, -1);
++            return ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, playerData, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion());
 +        } catch (Exception exception) {
 +            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + uuid);
          }

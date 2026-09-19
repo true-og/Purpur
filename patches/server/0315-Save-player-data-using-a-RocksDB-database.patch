@@ -51,10 +51,10 @@ index beb05039926e1fb7a656dfcd0c503f82db67fc46..256c9b8abd9c692b942e3be5d3aab0fe
              net.minecrell.terminalconsole.TerminalConsoleAppender.close(); // Paper - Use TerminalConsoleAppender
          } catch (Exception e) {
 diff --git a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363de0886e4 100644
+index 36af81f0957d17e170d229059c66f4eb4539dfeb..a4ad630b2a5c770ce41c3de26870fe10753aa77c 100644
 --- a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
 +++ b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-@@ -4,48 +4,244 @@ import com.mojang.datafixers.DataFixer;
+@@ -4,48 +4,245 @@ import com.mojang.datafixers.DataFixer;
  import com.mojang.logging.LogUtils;
  import java.io.File;
  import javax.annotation.Nullable;
@@ -96,6 +96,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +import java.nio.file.Files;
 +import java.nio.file.Path;
 +import java.util.List;
++import java.util.Map;
 +import java.util.UUID;
 +import java.util.ArrayList;
 +import java.util.concurrent.ConcurrentHashMap;
@@ -318,7 +319,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
      }
  
      @Nullable
-@@ -53,44 +249,34 @@ public class PlayerDataStorage {
+@@ -53,44 +250,34 @@ public class PlayerDataStorage {
          CompoundTag nbttagcompound = null;
  
          try {
@@ -382,21 +383,36 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
              int i = NbtUtils.getDataVersion(nbttagcompound, -1);
  
              player.load(ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, nbttagcompound, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion())); // Paper - replace player converter
-@@ -99,41 +285,80 @@ public class PlayerDataStorage {
+@@ -99,41 +286,183 @@ public class PlayerDataStorage {
          return nbttagcompound;
      }
  
 -    // CraftBukkit start
 -    public CompoundTag getPlayerData(String s) {
--        try {
++
++    public CompoundTag getPlayerData(UUID uuid) {
+         try {
 -            File file1 = new File(this.playerDir, s + ".dat");
++            byte[] data = get(defaultColumnFamily, getBytesFromUuid(uuid));
++            if (data == null) return null;
++            CompoundTag playerData = NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
++            int i = NbtUtils.getDataVersion(playerData, -1);
++            return ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, playerData, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion());
++        } catch (Exception exception) {
++            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + uuid);
++        }
  
 -            if (file1.exists()) {
 -                return NbtIo.readCompressed((InputStream) (new FileInputStream(file1)));
 -            }
-+    public CompoundTag getPlayerData(UUID uuid) {
++        return null;
++    }
++
++    public CompoundTag getPlayerDataCustom(String world, UUID uuid) {
 +        try {
-+            byte[] data = get(defaultColumnFamily, getBytesFromUuid(uuid));
++            ColumnFamilyHandle handle = getWorldColumnFamily(world);
++            if (handle == null) return null;
++            byte[] data = get(handle, getBytesFromUuid(uuid));
 +            if (data == null) return null;
 +            CompoundTag playerData = NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
 +            int i = NbtUtils.getDataVersion(playerData, -1);
@@ -409,30 +425,6 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
          return null;
      }
 -    // CraftBukkit end
--
--    public String[] getSeenPlayers() {
--        String[] astring = this.playerDir.list();
- 
--        if (astring == null) {
--            astring = new String[0];
-+    public CompoundTag getPlayerDataCustom(String world, UUID uuid) {
-+        try {
-+            ColumnFamilyHandle handle = getWorldColumnFamily(world);
-+            if (handle == null) return null;
-+            byte[] data = get(handle, getBytesFromUuid(uuid));
-+            if (data == null) return null;
-+            CompoundTag playerData = NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
-+            int i = NbtUtils.getDataVersion(playerData, -1);
-+            return ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, playerData, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion());
-+        } catch (Exception exception) {
-+            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + uuid);
-         }
- 
--        for (int i = 0; i < astring.length; ++i) {
--            if (astring[i].endsWith(".dat")) {
--                astring[i] = astring[i].substring(0, astring[i].length() - 4);
-+        return null;
-+    }
 +
 +    private String[] getAllPlayers(ColumnFamilyHandle columnFamilyHandle) {
 +        if (closed) return new String[0];
@@ -442,17 +434,14 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +                byte[] key = it.key();
 +                if (key.length != 16) continue;
 +                seenPlayers.add(getUUIDFromBytes(key).toString());
-             }
-         }
- 
--        return astring;
++            }
++        }
++
 +        return seenPlayers.toArray(new String[0]);
-     }
++    }
  
--    // CraftBukkit start
--    public File getPlayerDir() {
--        return this.playerDir;
-+    public String[] getSeenPlayers() {
+     public String[] getSeenPlayers() {
+-        String[] astring = this.playerDir.list();
 +        return getAllPlayers(defaultColumnFamily);
 +    }
 +
@@ -471,7 +460,9 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +            return false;
 +        }
 +    }
-+
+ 
+-        if (astring == null) {
+-            astring = new String[0];
 +    public boolean hasPlayerDataCustom(String world, UUID uuid) {
 +        ColumnFamilyHandle handle = getWorldColumnFamily(world);
 +        if (handle == null) return false;
@@ -480,6 +471,116 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +        } catch (RocksDBException e) {
 +            PlayerDataStorage.LOGGER.warn("Failed to check player data for {} on world {}", uuid, world);
 +            return false;
+         }
++    }
+ 
+-        for (int i = 0; i < astring.length; ++i) {
+-            if (astring[i].endsWith(".dat")) {
+-                astring[i] = astring[i].substring(0, astring[i].length() - 4);
++    // Raw, world scoped access for plugins. A null world addresses the default column family.
++    @Nullable
++    private ColumnFamilyHandle resolveColumnFamily(@Nullable String world, boolean create) {
++        if (closed) return null;
++        if (world == null) return defaultColumnFamily;
++        return create ? getOrCreateWorldColumnFamily(world) : getWorldColumnFamily(world);
++    }
++
++    private static String describeWorld(@Nullable String world) {
++        return world == null ? "the default storage" : "world " + world;
++    }
++
++    // Stored bytes as written, without the data converter. null if closed, unknown world, or no data.
++    @Nullable
++    public byte[] getRawPlayerData(@Nullable String world, UUID uuid) {
++        ColumnFamilyHandle handle = resolveColumnFamily(world, false);
++        if (handle == null) return null;
++        try {
++            return get(handle, getBytesFromUuid(uuid));
++        } catch (RocksDBException e) {
++            PlayerDataStorage.LOGGER.warn("Failed to read raw player data for {} on {}", uuid, describeWorld(world), e);
++            return null;
++        }
++    }
++
++    public boolean saveRawPlayerData(@Nullable String world, UUID uuid, byte[] nbt) {
++        if (closed) return false;
++        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return false; // Spigot
++        ColumnFamilyHandle handle = resolveColumnFamily(world, true);
++        if (handle == null) return false;
++        try {
++            rocksDB.put(handle, getBytesFromUuid(uuid), nbt);
++            return true;
++        } catch (RocksDBException e) {
++            PlayerDataStorage.LOGGER.warn("Failed to save raw player data for {} on {}", uuid, describeWorld(world), e);
++            return false;
++        }
++    }
++
++    // Writes every world entry for one player in a single batch, so either all land or none do.
++    public boolean saveRawPlayerData(UUID uuid, Map<String, byte[]> writesPerWorld) {
++        if (closed) return false;
++        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return false; // Spigot
++        byte[] key = getBytesFromUuid(uuid);
++        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
++            for (Map.Entry<String, byte[]> entry : writesPerWorld.entrySet()) {
++                ColumnFamilyHandle handle = resolveColumnFamily(entry.getKey(), true);
++                if (handle == null) return false;
++                batch.put(handle, key, entry.getValue());
+             }
++            rocksDB.write(options, batch);
++            return true;
++        } catch (RocksDBException e) {
++            PlayerDataStorage.LOGGER.warn("Failed to batch save raw player data for {}", uuid, e);
++            return false;
+         }
++    }
+ 
+-        return astring;
++    // Drops a world's column family. The default column family is never dropped.
++    public boolean dropWorldPlayerData(String world) {
++        if (closed) return false;
++        String name = "world:" + world;
++        ColumnFamilyHandle handle = worldHandles.remove(name);
++        if (handle == null) return false;
++        try {
++            rocksDB.dropColumnFamily(handle);
++        } catch (RocksDBException e) {
++            worldHandles.put(name, handle);
++            PlayerDataStorage.LOGGER.warn("Failed to drop player data for world {}", world, e);
++            return false;
++        }
++        handle.close();
++        return true;
+     }
+ 
+-    // CraftBukkit start
+-    public File getPlayerDir() {
+-        return this.playerDir;
++    // Copies every player entry into the target world, overwriting. Returns the count, or -1 on failure.
++    public int copyWorldPlayerData(@Nullable String from, String to) {
++        if (closed) return -1;
++        if (to.equals(from)) return 0;
++        ColumnFamilyHandle source = resolveColumnFamily(from, false);
++        if (source == null) return 0;
++        ColumnFamilyHandle target = resolveColumnFamily(to, true);
++        if (target == null) return -1;
++        int copied = 0;
++        try (RocksIterator it = rocksDB.newIterator(source); WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
++            for (it.seekToFirst(); it.isValid(); it.next()) {
++                byte[] key = it.key();
++                if (key.length != 16) continue;
++                batch.put(target, key, it.value());
++                copied++;
++                if (batch.count() >= 512) {
++                    rocksDB.write(options, batch);
++                    batch.clear();
++                }
++            }
++            if (batch.count() > 0) rocksDB.write(options, batch);
++            return copied;
++        } catch (RocksDBException e) {
++            PlayerDataStorage.LOGGER.warn("Failed to copy player data from {} to world {}", describeWorld(from), to, e);
++            return -1;
 +        }
      }
 -    // CraftBukkit end

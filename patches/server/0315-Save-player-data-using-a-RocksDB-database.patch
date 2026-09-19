@@ -18,7 +18,7 @@ index 9c01005751c0088f560f96401cdfdebbbda4e7ec..4d2e77efc362c1f14209e7e51b5ac151
      implementation("org.mozilla:rhino-engine:1.7.14") // Purpur
      implementation("dev.omega24:upnp4j:1.0") // Purpur
 diff --git a/src/main/java/net/minecraft/server/Main.java b/src/main/java/net/minecraft/server/Main.java
-index cdbf10339a8e8846a8c364de483a0ccd95cd225a..0d725fb135088578f4218f23c40c35f7e621f9da 100644
+index e4f92a0237e08c6a07da2b1c73de38c1acb20653..f1d7bb89fb8f02f120f9abfff5759668fc4de62c 100644
 --- a/src/main/java/net/minecraft/server/Main.java
 +++ b/src/main/java/net/minecraft/server/Main.java
 @@ -73,6 +73,8 @@ import net.minecraft.SharedConstants;
@@ -51,10 +51,10 @@ index beb05039926e1fb7a656dfcd0c503f82db67fc46..256c9b8abd9c692b942e3be5d3aab0fe
              net.minecrell.terminalconsole.TerminalConsoleAppender.close(); // Paper - Use TerminalConsoleAppender
          } catch (Exception e) {
 diff --git a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736df0176779 100644
+index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363de0886e4 100644
 --- a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
 +++ b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-@@ -4,48 +4,238 @@ import com.mojang.datafixers.DataFixer;
+@@ -4,48 +4,244 @@ import com.mojang.datafixers.DataFixer;
  import com.mojang.logging.LogUtils;
  import java.io.File;
  import javax.annotation.Nullable;
@@ -206,6 +206,12 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736d
 +        });
 +    }
 +
++    @Nullable
++    private ColumnFamilyHandle getWorldColumnFamily(String world) {
++        if (closed) return null;
++        return worldHandles.get("world:" + world);
++    }
++
 +    private static byte[] getBytesFromUuid(UUID uuid) {
 +        final ByteBuffer byteBuffer = ByteBuffer.wrap(new byte[16]);
 +        byteBuffer.putLong(uuid.getMostSignificantBits());
@@ -221,7 +227,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736d
 +    }
 +
 +    public void migrate(Path playerDir) {
-+        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
+         if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
 +        final byte[] migratedKey = "migrated".getBytes(StandardCharsets.US_ASCII);
 +        if (!Files.isDirectory(playerDir)) {
 +            try {
@@ -229,7 +235,9 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736d
 +            } catch (RocksDBException ignored) {}
 +            return;
 +        };
-+        try {
+         try {
+-            CompoundTag nbttagcompound = player.saveWithoutId(new CompoundTag());
+-            File file = File.createTempFile(player.getStringUUID() + "-", ".dat", this.playerDir);
 +            if (rocksDB.get(migratedKey) != null) return;
 +        } catch (RocksDBException e) {
 +            throw new RuntimeException("Could not determine whether player data was migrated", e);
@@ -263,13 +271,14 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736d
 +            throw new RuntimeException("Could not successfully migrate player data", e);
 +        }
 +    }
-+
+ 
+-            NbtIo.writeCompressed(nbttagcompound, file);
+-            File file1 = new File(this.playerDir, player.getStringUUID() + ".dat");
+-            File file2 = new File(this.playerDir, player.getStringUUID() + ".dat_old");
 +    public void saveCompoundTag(UUID uuid, CompoundTag compoundTag) {
 +        if (closed) return;
-         if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
-         try {
--            CompoundTag nbttagcompound = player.saveWithoutId(new CompoundTag());
--            File file = File.createTempFile(player.getStringUUID() + "-", ".dat", this.playerDir);
++        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
++        try {
 +            final ByteArrayOutputStream playerByteArrayOutputStream = new ByteArrayOutputStream();
 +            NbtIo.write(compoundTag, new DataOutputStream(playerByteArrayOutputStream));
 +            rocksDB.put(getBytesFromUuid(uuid), playerByteArrayOutputStream.toByteArray());
@@ -277,10 +286,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736d
 +            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", uuid, exception);
 +        }
 +    }
- 
--            NbtIo.writeCompressed(nbttagcompound, file);
--            File file1 = new File(this.playerDir, player.getStringUUID() + ".dat");
--            File file2 = new File(this.playerDir, player.getStringUUID() + ".dat_old");
++
 +    public void saveCompoundTagCustom(String world, UUID uuid, CompoundTag compoundTag) {
 +        if (closed) return;
 +        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return;
@@ -312,7 +318,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736d
      }
  
      @Nullable
-@@ -53,44 +243,34 @@ public class PlayerDataStorage {
+@@ -53,44 +249,34 @@ public class PlayerDataStorage {
          CompoundTag nbttagcompound = null;
  
          try {
@@ -376,7 +382,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736d
              int i = NbtUtils.getDataVersion(nbttagcompound, -1);
  
              player.load(ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, nbttagcompound, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion())); // Paper - replace player converter
-@@ -99,41 +279,49 @@ public class PlayerDataStorage {
+@@ -99,41 +285,80 @@ public class PlayerDataStorage {
          return nbttagcompound;
      }
  
@@ -411,7 +417,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736d
 -            astring = new String[0];
 +    public CompoundTag getPlayerDataCustom(String world, UUID uuid) {
 +        try {
-+            ColumnFamilyHandle handle = getOrCreateWorldColumnFamily(world);
++            ColumnFamilyHandle handle = getWorldColumnFamily(world);
 +            if (handle == null) return null;
 +            byte[] data = get(handle, getBytesFromUuid(uuid));
 +            if (data == null) return null;
@@ -428,10 +434,10 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736d
 +        return null;
 +    }
 +
-+    public String[] getSeenPlayers() {
++    private String[] getAllPlayers(ColumnFamilyHandle columnFamilyHandle) {
 +        if (closed) return new String[0];
 +        final ArrayList<String> seenPlayers = new ArrayList<>();
-+        try (RocksIterator it = rocksDB.newIterator()) {
++        try (RocksIterator it = rocksDB.newIterator(columnFamilyHandle)) {
 +            for (it.seekToFirst(); it.isValid(); it.next()) {
 +                byte[] key = it.key();
 +                if (key.length != 16) continue;
@@ -440,12 +446,41 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9eedca5e8b9e025bb8c099121a99736d
          }
  
 -        return astring;
--    }
--
++        return seenPlayers.toArray(new String[0]);
+     }
+ 
 -    // CraftBukkit start
 -    public File getPlayerDir() {
 -        return this.playerDir;
-+        return seenPlayers.toArray(new String[0]);
++    public String[] getSeenPlayers() {
++        return getAllPlayers(defaultColumnFamily);
++    }
++
++    public String[] getSeenPlayersCustom(String world) {
++        if (closed) return new String[0];
++        ColumnFamilyHandle handle = getWorldColumnFamily(world);
++        if (handle == null) return new String[0];
++        return getAllPlayers(handle);
++    }
++
++    public boolean hasPlayerData(UUID uuid) {
++        try {
++            return get(defaultColumnFamily, getBytesFromUuid(uuid)) != null;
++        } catch (RocksDBException e) {
++            PlayerDataStorage.LOGGER.warn("Failed to check player data for {}", uuid);
++            return false;
++        }
++    }
++
++    public boolean hasPlayerDataCustom(String world, UUID uuid) {
++        ColumnFamilyHandle handle = getWorldColumnFamily(world);
++        if (handle == null) return false;
++        try {
++            return get(handle, getBytesFromUuid(uuid)) != null;
++        } catch (RocksDBException e) {
++            PlayerDataStorage.LOGGER.warn("Failed to check player data for {} on world {}", uuid, world);
++            return false;
++        }
      }
 -    // CraftBukkit end
 +    // TrueOG end
@@ -567,7 +602,7 @@ index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286
      // Purpur end - OfflinePlayer API
  }
 diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
-index 3310828edcabd2c24e3200dcb89d4e8ebd82cf16..cce3eb21545a0f6e3d5bed9308b9768185984e72 100644
+index 01137e7000bd24f80f329aa577e606db52fd9e3c..4c23ae1a88962d925223b0e773bfcb2a8899f20e 100644
 --- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
 +++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
 @@ -194,7 +194,6 @@ import org.bukkit.craftbukkit.util.CraftLocation;
@@ -578,7 +613,7 @@ index 3310828edcabd2c24e3200dcb89d4e8ebd82cf16..cce3eb21545a0f6e3d5bed9308b97681
  import org.bukkit.craftbukkit.util.Versioning;
  import org.bukkit.craftbukkit.util.permissions.CraftDefaultPermissions;
  import org.bukkit.entity.Entity;
-@@ -2126,16 +2125,17 @@ public final class CraftServer implements Server {
+@@ -2134,16 +2133,17 @@ public final class CraftServer implements Server {
      @Override
      public OfflinePlayer[] getOfflinePlayers() {
          PlayerDataStorage storage = console.playerDataStorage;

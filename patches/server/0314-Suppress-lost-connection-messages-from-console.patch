@@ -5,7 +5,7 @@ Subject: [PATCH] Suppress lost connection messages from console
 
 
 diff --git a/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index af8cb1f1f0c128923495f51e4828003133ce766b..082e60072c73e1a30e8a287afd240db80bdd7286 100644
+index af8cb1f1f0c128923495f51e4828003133ce766b..446790354ed65e735036cb8bb8d5f084e79e0b0c 100644
 --- a/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 @@ -2201,7 +2201,7 @@ public class ServerGamePacketListenerImpl implements ServerPlayerConnection, Tic
@@ -13,12 +13,12 @@ index af8cb1f1f0c128923495f51e4828003133ce766b..082e60072c73e1a30e8a287afd240db8
          // CraftBukkit end
          this.chatMessageChain.close();
 -        ServerGamePacketListenerImpl.LOGGER.info("{} lost connection: {}", this.player.getName().getString(), reason.getString());
-+        // TrueOG - suppress "lost connection" console message
++        // TrueOG - Suppress "lost connection" console message.
          // CraftBukkit start - Replace vanilla quit message handling with our own.
          /*
          this.server.invalidateStatus();
 diff --git a/src/main/java/net/minecraft/server/network/ServerLoginPacketListenerImpl.java b/src/main/java/net/minecraft/server/network/ServerLoginPacketListenerImpl.java
-index f719f8aafe7c75e2ef8fcb05f556a8d6bd94b9a0..56db3518931da9063e53fc59689e661bfe23cfea 100644
+index f719f8aafe7c75e2ef8fcb05f556a8d6bd94b9a0..8ad883d1546ac2ba953612b63059e39a8add39f3 100644
 --- a/src/main/java/net/minecraft/server/network/ServerLoginPacketListenerImpl.java
 +++ b/src/main/java/net/minecraft/server/network/ServerLoginPacketListenerImpl.java
 @@ -204,7 +204,7 @@ public class ServerLoginPacketListenerImpl implements ServerLoginPacketListener,
@@ -26,7 +26,7 @@ index f719f8aafe7c75e2ef8fcb05f556a8d6bd94b9a0..56db3518931da9063e53fc59689e661b
      @Override
      public void onDisconnect(Component reason) {
 -        ServerLoginPacketListenerImpl.LOGGER.info("{} lost connection: {}", this.getUserName(), reason.getString());
-+        // TrueOG - suppress "lost connection" console message
++        // TrueOG - Suppress "lost connection" console message.
      }
  
      public String getUserName() {

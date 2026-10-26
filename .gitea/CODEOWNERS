@@ -1,4 +1,3 @@
-# Every pull request needs one approval from an Admin AND one from a Developer.
-# Gitea requests a review from each team below; the merge is blocked until a member of
-# each team has reviewed (branch protection: block on official review requests).
+# Pull requests request review from the eligible staff team(s).
+# One approval from either an Admin or Developer satisfies branch protection.
 *   @trueog/Admins @trueog/Developers

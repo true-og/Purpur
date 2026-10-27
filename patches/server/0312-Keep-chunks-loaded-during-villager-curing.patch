@@ -5,25 +5,15 @@ Subject: [PATCH] Keep chunks loaded during villager curing
 
 Holds a per-entity chunk ticket (radius 2, entity-ticking at the center)
 while a zombie villager is converting, so the cure finishes even if the
-player who started it leaves or the server restarts mid-cure.
+player who started it leaves.
 
-The ticket is added when the conversion starts (player, API, or NBT
-replay on chunk load), re-homed when the entity crosses a chunk border,
-and refreshed every tick the entity ticks. It expires 20 seconds after
-the last refresh, which bounds every removal path that bypasses
-remove() (portal trips, cross-world /tp, UNLOADED_WITH_PLAYER, chunk
-unload, duplicate-UUID regen). Known paths release it immediately.
-
-On a dimension change or cross-world teleport the replacement entity's
-NBT replay takes a ticket at the source coordinates before it is moved;
-restoreFrom drops that ticket and setPos takes one at the final position.
-
-Zombie villagers saved mid-cure by earlier builds of this patch, which
-disabled AI and used /forceload, get their AI back and their chunk
-un-forced on load.
+The ticket is taken when the conversion starts or saved conversion data
+loads, follows the entity across chunk borders, and is refreshed while
+the entity ticks. Known removal paths release it; a 20 second timeout
+bounds the ones that are missed.
 
 diff --git a/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java b/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
-index 0c6e8e05014125427513e96c32510125ec34ece9..f58f1dfb589eec25c32aada5c511cc10ac2519f2 100644
+index 0c6e8e05014125427513e96c32510125ec34ece9..2f122dd0432390626dd23c59a32451be3769a9d4 100644
 --- a/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
 +++ b/src/main/java/net/minecraft/world/entity/monster/ZombieVillager.java
 @@ -21,6 +21,7 @@ import net.minecraft.world.InteractionResult;
@@ -54,10 +44,10 @@ index 0c6e8e05014125427513e96c32510125ec34ece9..f58f1dfb589eec25c32aada5c511cc10
      private static final int VILLAGER_CONVERSION_WAIT_MAX = 6000;
      private static final int MAX_SPECIAL_BLOCKS_COUNT = 14;
      private static final int SPECIAL_BLOCK_RADIUS = 4;
-+    // TrueOG start - villager curing chunk ticket
-+    private static final int CONVERSION_TICKET_RADIUS = 2; // radius 2 = ENTITY_TICKING level for the center chunk, same as /forceload
-+    private static final int CONVERSION_TICKET_TIMEOUT = 20 * 20; // ticks; refreshed every tick the cure ticks, so a removal path that bypasses remove() leaks the chunks for at most this long, and a chunk that never reaches entity-ticking is let go
-+    private static final TicketType<UUID> CONVERSION_TICKET = TicketType.create("zombie_villager_conversion", UUID::compareTo, CONVERSION_TICKET_TIMEOUT); // per-entity, expiring; not /forceload, not persisted
++    // TrueOG start
++    private static final int CONVERSION_TICKET_RADIUS = 2; // Radius 2 makes the center chunk ENTITY_TICKING.
++    private static final int CONVERSION_TICKET_TIMEOUT = 20 * 20; // Ticks; bounds how long the ticket is held once the entity stops refreshing it.
++    private static final TicketType<UUID> CONVERSION_TICKET = TicketType.create("zombie_villager_conversion", UUID::compareTo, CONVERSION_TICKET_TIMEOUT); // Not persisted; taken again when the conversion NBT loads.
 +    // TrueOG end
      public int villagerConversionTime;
      @Nullable
@@ -66,57 +56,36 @@ index 0c6e8e05014125427513e96c32510125ec34ece9..f58f1dfb589eec25c32aada5c511cc10
      private CompoundTag tradeOffers;
      private int villagerXp;
      private int lastTick = MinecraftServer.currentTick; // CraftBukkit - add field
-+    // TrueOG start - villager curing chunk ticket
++    // TrueOG start
 +    @Nullable
 +    private ChunkPos conversionTicketChunk;
 +    @Nullable
-+    private UUID conversionTicketKey; // UUID the ticket was added under; Paper's duplicate-UUID handling can change getUUID() after load()
++    private UUID conversionTicketKey; // Kept because Paper can change the entity UUID after loading.
 +    // TrueOG end
  
      public ZombieVillager(EntityType<? extends ZombieVillager> type, Level world) {
          super(type, world);
-@@ -183,6 +197,20 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
-             this.gossips = nbt.getList("Gossips", 10);
-         }
- 
-+        // TrueOG start - undo what older builds of this patch left in zombie villagers saved mid-cure
-+        if (nbt.contains("ConversionTime", 99) && nbt.getInt("ConversionTime") > -1) {
-+            if (nbt.contains("PurpurNoAiOverridden")) {
-+                // 2026-04-28 to 2026-09-16: the cure set NoAI and recorded the pre-cure value
-+                this.setNoAi(nbt.getBoolean("PurpurPreCureNoAi"));
-+            } else if (nbt.getBoolean("NoAI") && nbt.hasUUID("ConversionPlayer") && this.level instanceof ServerLevel serverLevel) {
-+                // 2025-11-19 to 2026-04-28: the cure set NoAI and /forceload-ed the chunk without recording either.
-+                // A genuinely NoAI zombie villager being cured by a player is far rarer than a save from that build.
-+                this.setNoAi(false);
-+                serverLevel.setChunkForced(this.chunkPosition().x, this.chunkPosition().z, false);
-+            }
-+        }
-+        // TrueOG end
-+
-         if (nbt.contains("ConversionTime", 99) && nbt.getInt("ConversionTime") > -1) {
-             this.startConverting(nbt.hasUUID("ConversionPlayer") ? nbt.getUUID("ConversionPlayer") : null, nbt.getInt("ConversionTime"));
-         }
-@@ -196,6 +224,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+@@ -196,6 +210,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
      @Override
      public void tick() {
          if (!this.level.isClientSide && this.isAlive() && this.isConverting()) {
-+            this.updateConversionTicket(); // TrueOG - refresh the ticket's expiry and re-home it if the entity changed chunks
++            this.updateConversionTicket(); // TrueOG
              int i = this.getConversionProgress();
              // CraftBukkit start - Use wall time instead of ticks for villager conversion
              int elapsedTicks = MinecraftServer.currentTick - this.lastTick;
-@@ -210,7 +239,73 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+@@ -210,7 +225,72 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
  
          super.tick();
          this.lastTick = MinecraftServer.currentTick; // CraftBukkit
 +
-+        // TrueOG start - the cure can end without finishConversion (cancelled EntityTransformEvent, API setConversionTime(-1))
++        // TrueOG start - Release the ticket when the conversion is cancelled.
 +        if (!this.level.isClientSide && !this.isConverting()) {
 +            this.releaseConversionTicket();
 +        }
 +        // TrueOG end
 +    }
 +
-+    // TrueOG start - villager curing chunk ticket
++    // TrueOG start
 +    @Override
 +    public void inactiveTick() {
 +        super.inactiveTick();
@@ -127,32 +96,31 @@ index 0c6e8e05014125427513e96c32510125ec34ece9..f58f1dfb589eec25c32aada5c511cc10
 +    public void setPos(double x, double y, double z) {
 +        super.setPos(x, y, z);
 +        if (this.conversionTicketChunk == null ? this.isConverting() : !this.conversionTicketChunk.equals(this.chunkPosition())) {
-+            this.updateConversionTicket(); // follow the entity when physics, vehicles, or plugins move it across a chunk border, or take the ticket restoreFrom dropped once moveTo places the entity
++            this.updateConversionTicket();
 +        }
 +    }
 +
 +    @Override
 +    public void restoreFrom(Entity original) {
 +        super.restoreFrom(original);
-+        // load() replayed startConverting at the source-world coordinates before changeDimension/teleportTo call moveTo,
-+        // so the ticket is in the wrong chunk of the destination world; drop it and let moveTo -> setPos take the right one
++        // Drop the ticket load() took at the source coordinates; setPos() takes the destination one.
 +        this.releaseConversionTicket();
 +    }
 +
 +    @Override
 +    public void remove(Entity.RemovalReason reason) {
-+        this.releaseConversionTicket(); // death, despawn, /kill, discard
++        this.releaseConversionTicket();
 +        super.remove(reason);
 +    }
 +
 +    @Override
 +    protected void removeAfterChangingDimensions() {
-+        this.releaseConversionTicket(); // portal trips and Bukkit cross-world teleports call setRemoved() directly, not remove()
++        this.releaseConversionTicket(); // This removal path bypasses remove().
 +        super.removeAfterChangingDimensions();
 +    }
 +
 +    private void updateConversionTicket() {
-+        if (this.level == null || this.level.isClientSide || !this.isConverting() || !(this.level instanceof ServerLevel serverLevel)) {
++        if (!(this.level instanceof ServerLevel serverLevel) || !this.isConverting()) {
 +            return;
 +        }
 +
@@ -161,7 +129,7 @@ index 0c6e8e05014125427513e96c32510125ec34ece9..f58f1dfb589eec25c32aada5c511cc10
 +        if (this.conversionTicketChunk != null && (!this.conversionTicketChunk.equals(chunkPos) || !key.equals(this.conversionTicketKey))) {
 +            serverLevel.getChunkSource().removeRegionTicket(CONVERSION_TICKET, this.conversionTicketChunk, CONVERSION_TICKET_RADIUS, this.conversionTicketKey);
 +        }
-+        // re-adding an identical ticket replaces it and restarts its expiry
++        // Re-adding the ticket refreshes its expiry.
 +        serverLevel.getChunkSource().addRegionTicket(CONVERSION_TICKET, chunkPos, CONVERSION_TICKET_RADIUS, key);
 +        this.conversionTicketChunk = chunkPos;
 +        this.conversionTicketKey = key;
@@ -178,19 +146,11 @@ index 0c6e8e05014125427513e96c32510125ec34ece9..f58f1dfb589eec25c32aada5c511cc10
  
      @Override
      public InteractionResult mobInteract(Player player, InteractionHand hand) {
-@@ -263,6 +358,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
+@@ -263,6 +343,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
          this.removeEffect(MobEffects.WEAKNESS, org.bukkit.event.entity.EntityPotionEffectEvent.Cause.CONVERSION);
          this.addEffect(new MobEffectInstance(MobEffects.DAMAGE_BOOST, delay, Math.min(this.level.getDifficulty().getId() - 1, 0)), org.bukkit.event.entity.EntityPotionEffectEvent.Cause.CONVERSION);
          // CraftBukkit end
-+        this.updateConversionTicket(); // TrueOG - player, API, and chunk-load replay starts all come through here
++        this.updateConversionTicket(); // TrueOG
          if (broadcastEntityEvent) this.level.broadcastEntityEvent(this, (byte) 16); // Paper - missing entity behaviour api - converting without entity event
      }
  
-@@ -279,6 +375,7 @@ public class ZombieVillager extends Zombie implements VillagerDataHolder {
-     }
- 
-     private void finishConversion(ServerLevel world) {
-+        this.releaseConversionTicket(); // TrueOG - convertTo discards this entity; if the transform is cancelled, tick() sees isConverting() false
-         // CraftBukkit start
-         Villager entityvillager = (Villager) this.convertTo(EntityType.VILLAGER, false, EntityTransformEvent.TransformReason.CURED, CreatureSpawnEvent.SpawnReason.CURED);
-         if (entityvillager == null) {

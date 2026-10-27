@@ -51,10 +51,10 @@ index beb05039926e1fb7a656dfcd0c503f82db67fc46..256c9b8abd9c692b942e3be5d3aab0fe
              net.minecrell.terminalconsole.TerminalConsoleAppender.close(); // Paper - Use TerminalConsoleAppender
          } catch (Exception e) {
 diff --git a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363de0886e4 100644
+index 36af81f0957d17e170d229059c66f4eb4539dfeb..b301ab3c34d96f8fac16a1113afa0946e71d0a27 100644
 --- a/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
 +++ b/src/main/java/net/minecraft/world/level/storage/PlayerDataStorage.java
-@@ -4,48 +4,244 @@ import com.mojang.datafixers.DataFixer;
+@@ -4,48 +4,212 @@ import com.mojang.datafixers.DataFixer;
  import com.mojang.logging.LogUtils;
  import java.io.File;
  import javax.annotation.Nullable;
@@ -98,8 +98,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +import java.util.List;
 +import java.util.UUID;
 +import java.util.ArrayList;
-+import java.util.concurrent.ConcurrentHashMap;
-+import java.util.concurrent.ConcurrentMap;
++import java.util.concurrent.atomic.AtomicBoolean;
 +import java.util.stream.Stream;
 +// TrueOG end
  
@@ -113,8 +112,8 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +    private final ColumnFamilyOptions columnFamilyOptions;
 +    private final RocksDB rocksDB;
 +    private ColumnFamilyHandle defaultColumnFamily;
-+    private final ConcurrentMap<String, ColumnFamilyHandle> worldHandles = new ConcurrentHashMap<>();
-+    private volatile boolean closed = false;
++    // Shared with the shallow copy a plugin hook (BKCommonLib) installs over PlayerList.playerIo, so the copy sees the close too
++    private final AtomicBoolean closed = new AtomicBoolean();
 +    // TrueOG end
  
      public PlayerDataStorage(LevelStorageSource.LevelStorageAccess session, DataFixer dataFixer) {
@@ -154,9 +153,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +                String name = new String(descriptors.get(i).getName(), StandardCharsets.UTF_8);
 +                if (name.equals("default")) {
 +                    defaultColumnFamily = handles.get(i);
-+                    continue;
 +                }
-+                worldHandles.put(name, handles.get(i));
 +            }
 +        } catch (RocksDBException e) {
 +            throw new RuntimeException(e);
@@ -169,14 +166,8 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 -    public void save(Player player) {
 +    // TrueOG start
 +    public void close() {
-+        if (closed) return;
-+        closed = true;
++        if (!closed.compareAndSet(false, true)) return;
 +        try {
-+            for (ColumnFamilyHandle handle : worldHandles.values()) {
-+                handle.close();
-+            }
-+            worldHandles.clear();
-+
 +            rocksDB.syncWal();
 +            rocksDB.closeE();
 +
@@ -185,31 +176,6 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +        } catch (RocksDBException e) {
 +            PlayerDataStorage.LOGGER.warn("Failed to properly close player data", e);
 +        }
-+    }
-+
-+    private ColumnFamilyHandle getOrCreateWorldColumnFamily(String world) {
-+        if (closed) return null;
-+        String worldName = "world:" + world;
-+        return worldHandles.computeIfAbsent(worldName, key -> {
-+            ColumnFamilyHandle handle = null;
-+            try {
-+                handle = rocksDB.createColumnFamily(
-+                    new ColumnFamilyDescriptor(
-+                        key.getBytes(StandardCharsets.UTF_8),
-+                        columnFamilyOptions
-+                    )
-+                );
-+            } catch (RocksDBException e) {
-+                PlayerDataStorage.LOGGER.warn("Failed to create a new column for world " + world);
-+            }
-+            return handle;
-+        });
-+    }
-+
-+    @Nullable
-+    private ColumnFamilyHandle getWorldColumnFamily(String world) {
-+        if (closed) return null;
-+        return worldHandles.get("world:" + world);
 +    }
 +
 +    private static byte[] getBytesFromUuid(UUID uuid) {
@@ -250,11 +216,19 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +                if (!Files.isRegularFile(path)) continue;
 +                String fileName = path.getFileName().toString();
 +                String uuid = fileName.substring(0, fileName.length() - 4);
++                final UUID playerUuid;
++                try {
++                    playerUuid = UUID.fromString(uuid);
++                } catch (IllegalArgumentException e) {
++                    // A save interrupted by a crash leaves <uuid>-<random>.dat behind; it is no player and must not stop the import
++                    PlayerDataStorage.LOGGER.warn("Skipping {} in the player data directory, not a player file", fileName);
++                    continue;
++                }
 +                try {
 +                    final CompoundTag nbttagcompound = NbtIo.readCompressed(file);
 +                    final ByteArrayOutputStream playerByteArrayOutputStream = new ByteArrayOutputStream();
 +                    NbtIo.write(nbttagcompound, new DataOutputStream(playerByteArrayOutputStream));
-+                    rocksDB.put(getBytesFromUuid(UUID.fromString(uuid)), playerByteArrayOutputStream.toByteArray());
++                    rocksDB.put(getBytesFromUuid(playerUuid), playerByteArrayOutputStream.toByteArray());
 +                } catch (IOException | RocksDBException | IllegalArgumentException e) {
 +                    PlayerDataStorage.LOGGER.warn("Failed to migrate player data for {}", uuid, e);
 +                    success = false;
@@ -276,7 +250,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 -            File file1 = new File(this.playerDir, player.getStringUUID() + ".dat");
 -            File file2 = new File(this.playerDir, player.getStringUUID() + ".dat_old");
 +    public void saveCompoundTag(UUID uuid, CompoundTag compoundTag) {
-+        if (closed) return;
++        if (closed.get()) return;
 +        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
 +        try {
 +            final ByteArrayOutputStream playerByteArrayOutputStream = new ByteArrayOutputStream();
@@ -284,18 +258,8 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +            rocksDB.put(getBytesFromUuid(uuid), playerByteArrayOutputStream.toByteArray());
 +        } catch (Exception exception) {
 +            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", uuid, exception);
-+        }
-+    }
-+
-+    public void saveCompoundTagCustom(String world, UUID uuid, CompoundTag compoundTag) {
-+        if (closed) return;
-+        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return;
-+        try {
-+            final ByteArrayOutputStream playerByteArrayOutputStream = new ByteArrayOutputStream();
-+            NbtIo.write(compoundTag, new DataOutputStream(playerByteArrayOutputStream));
-+            rocksDB.put(getOrCreateWorldColumnFamily(world), getBytesFromUuid(uuid), playerByteArrayOutputStream.toByteArray());
-+        } catch (Exception exception) {
-+            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", uuid, exception);
++            // A plugin that wrote a profile must learn the write failed, or it carries on as if the data were safe
++            throw new IllegalStateException("Failed to save player data for " + uuid, exception);
 +        }
 +    }
  
@@ -309,16 +273,20 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +            PlayerDataStorage.LOGGER.warn("Failed to save player data for {}", player.getScoreboardName(), exception);
 +            return;
          }
-+        saveCompoundTag(player.getUUID(), playerData);
++        try {
++            saveCompoundTag(player.getUUID(), playerData);
++        } catch (IllegalStateException ignored) {
++            // Already logged; the vanilla save path never threw
++        }
 +    }
  
 +    private byte[] get(ColumnFamilyHandle columnFamilyHandle, byte[] uuidBytes) throws RocksDBException {
-+        if (closed) return null;
++        if (closed.get()) return null;
 +        return rocksDB.get(columnFamilyHandle, uuidBytes);
      }
  
      @Nullable
-@@ -53,44 +249,34 @@ public class PlayerDataStorage {
+@@ -53,44 +217,34 @@ public class PlayerDataStorage {
          CompoundTag nbttagcompound = null;
  
          try {
@@ -382,7 +350,7 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
              int i = NbtUtils.getDataVersion(nbttagcompound, -1);
  
              player.load(ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, nbttagcompound, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion())); // Paper - replace player converter
-@@ -99,41 +285,80 @@ public class PlayerDataStorage {
+@@ -99,41 +253,46 @@ public class PlayerDataStorage {
          return nbttagcompound;
      }
  
@@ -400,13 +368,15 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +            if (data == null) return null;
 +            CompoundTag playerData = NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
 +            int i = NbtUtils.getDataVersion(playerData, -1);
-+            return ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, playerData, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion());
++            return NbtUtils.addCurrentDataVersion(ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, playerData, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion()));
          } catch (Exception exception) {
 -            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + s);
 +            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + uuid);
++            // A plugin editing profiles offline must be able to tell a missing profile from one it could not read, or it overwrites the data
++            throw new IllegalStateException("Failed to load player data for " + uuid, exception);
          }
- 
-         return null;
+-
+-        return null;
      }
 -    // CraftBukkit end
 -
@@ -415,27 +385,13 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
  
 -        if (astring == null) {
 -            astring = new String[0];
-+    public CompoundTag getPlayerDataCustom(String world, UUID uuid) {
-+        try {
-+            ColumnFamilyHandle handle = getWorldColumnFamily(world);
-+            if (handle == null) return null;
-+            byte[] data = get(handle, getBytesFromUuid(uuid));
-+            if (data == null) return null;
-+            CompoundTag playerData = NbtIo.read(new DataInputStream(new ByteArrayInputStream(data)));
-+            int i = NbtUtils.getDataVersion(playerData, -1);
-+            return ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, playerData, i, net.minecraft.SharedConstants.getCurrentVersion().getDataVersion().getVersion());
-+        } catch (Exception exception) {
-+            PlayerDataStorage.LOGGER.warn("Failed to load player data for " + uuid);
-         }
- 
+-        }
+-
 -        for (int i = 0; i < astring.length; ++i) {
 -            if (astring[i].endsWith(".dat")) {
 -                astring[i] = astring[i].substring(0, astring[i].length() - 4);
-+        return null;
-+    }
-+
 +    private String[] getAllPlayers(ColumnFamilyHandle columnFamilyHandle) {
-+        if (closed) return new String[0];
++        if (closed.get()) return new String[0];
 +        final ArrayList<String> seenPlayers = new ArrayList<>();
 +        try (RocksIterator it = rocksDB.newIterator(columnFamilyHandle)) {
 +            for (it.seekToFirst(); it.isValid(); it.next()) {
@@ -456,37 +412,19 @@ index 36af81f0957d17e170d229059c66f4eb4539dfeb..9913b0838f3fe58bdafdb1f6a1d8c363
 +        return getAllPlayers(defaultColumnFamily);
 +    }
 +
-+    public String[] getSeenPlayersCustom(String world) {
-+        if (closed) return new String[0];
-+        ColumnFamilyHandle handle = getWorldColumnFamily(world);
-+        if (handle == null) return new String[0];
-+        return getAllPlayers(handle);
-+    }
-+
 +    public boolean hasPlayerData(UUID uuid) {
 +        try {
 +            return get(defaultColumnFamily, getBytesFromUuid(uuid)) != null;
 +        } catch (RocksDBException e) {
 +            PlayerDataStorage.LOGGER.warn("Failed to check player data for {}", uuid);
-+            return false;
-+        }
-+    }
-+
-+    public boolean hasPlayerDataCustom(String world, UUID uuid) {
-+        ColumnFamilyHandle handle = getWorldColumnFamily(world);
-+        if (handle == null) return false;
-+        try {
-+            return get(handle, getBytesFromUuid(uuid)) != null;
-+        } catch (RocksDBException e) {
-+            PlayerDataStorage.LOGGER.warn("Failed to check player data for {} on world {}", uuid, world);
-+            return false;
++            throw new IllegalStateException("Failed to check player data for " + uuid, e);
 +        }
      }
 -    // CraftBukkit end
 +    // TrueOG end
  }
 diff --git a/src/main/java/org/bukkit/craftbukkit/CraftOfflinePlayer.java b/src/main/java/org/bukkit/craftbukkit/CraftOfflinePlayer.java
-index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286049cfb98 100644
+index 312a6d90c0a09570aef24c205dc2ff277dcd4279..a493b56ab6de7cde4ecc687cfa121cab1a3cf4ac 100644
 --- a/src/main/java/org/bukkit/craftbukkit/CraftOfflinePlayer.java
 +++ b/src/main/java/org/bukkit/craftbukkit/CraftOfflinePlayer.java
 @@ -1,7 +1,6 @@
@@ -497,16 +435,20 @@ index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286
  import java.util.LinkedHashMap;
  import java.util.List;
  import java.util.Map;
-@@ -188,7 +187,7 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+@@ -188,7 +187,11 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
      }
  
      private CompoundTag getData() {
 -        return this.storage.getPlayerData(this.getUniqueId().toString());
-+        return this.storage.getPlayerData(this.getUniqueId());
++        try {
++            return this.storage.getPlayerData(this.getUniqueId());
++        } catch (IllegalStateException exception) {
++            return null; // Bukkit's OfflinePlayer getters never throw, and the storage already logged the failed read
++        }
      }
  
      private CompoundTag getBukkitData() {
-@@ -204,10 +203,6 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+@@ -204,10 +207,6 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
          return result;
      }
  
@@ -517,7 +459,7 @@ index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286
      @Override
      public long getFirstPlayed() {
          Player player = this.getPlayer();
-@@ -215,13 +210,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+@@ -215,13 +214,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
  
          CompoundTag data = this.getBukkitData();
  
@@ -533,7 +475,7 @@ index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286
          } else {
              return 0;
          }
-@@ -234,13 +224,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+@@ -234,13 +228,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
  
          CompoundTag data = this.getBukkitData();
  
@@ -549,7 +491,7 @@ index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286
          } else {
              return 0;
          }
-@@ -259,14 +244,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+@@ -259,14 +248,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
  
          CompoundTag data = getPaperData();
  
@@ -566,7 +508,7 @@ index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286
          } else {
              return 0;
          }
-@@ -279,14 +258,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+@@ -279,14 +262,8 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
  
          CompoundTag data = getPaperData();
  
@@ -583,7 +525,7 @@ index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286
          } else {
              return 0;
          }
-@@ -746,16 +719,7 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
+@@ -746,16 +723,7 @@ public class CraftOfflinePlayer implements OfflinePlayer, ConfigurationSerializa
       * @param compoundTag
       */
      private void save(CompoundTag compoundTag) {
@@ -602,7 +544,7 @@ index 312a6d90c0a09570aef24c205dc2ff277dcd4279..d0e5c8163530f2c530f492a23170b286
      // Purpur end - OfflinePlayer API
  }
 diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
-index 01137e7000bd24f80f329aa577e606db52fd9e3c..4c23ae1a88962d925223b0e773bfcb2a8899f20e 100644
+index 37f1c7159f432c21e450afdf087a3199ee1c31ea..419815173857b0aa8affa2a54826c6d2b0334847 100644
 --- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
 +++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
 @@ -194,7 +194,6 @@ import org.bukkit.craftbukkit.util.CraftLocation;

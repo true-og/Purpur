@@ -4,21 +4,16 @@ Date: Wed, 25 Mar 2026 03:54:25 -0400
 Subject: [PATCH] Prevent server from writing to config files
 
 An existing server.properties, bukkit.yml, commands.yml, spigot.yml,
-purpur.yml, or Paper configuration file (paper-global.yml,
-paper-world-defaults.yml, per-world paper-world.yml) is never rewritten:
-no comment or ordering churn and no default back-fill. A file that does
-not exist yet is still generated with defaults, so a fresh instance
-starts without copying configuration from another server.
+purpur.yml or Paper configuration file (paper-global.yml,
+paper-world-defaults.yml, per-world paper-world.yml) is never rewritten.
+A missing file is still generated with defaults.
 
-Runtime changes that vanilla persisted to server.properties
-(/whitelist on|off, /setidletimeout) now apply in memory only;
-/whitelist tells the sender so. The legacy paper.yml conversion is
-skipped for the same reason.
-
-One INFO line at startup states the rule; skipped writes are silent.
+/whitelist on|off and /setidletimeout apply in memory only; /whitelist
+tells the sender so. The legacy paper.yml conversion no longer writes
+its result.
 
 diff --git a/src/main/java/io/papermc/paper/configuration/Configurations.java b/src/main/java/io/papermc/paper/configuration/Configurations.java
-index 9ef6712c70fcd8912a79f3f61e351aac09572cf3..5504ce65926c99c21101d4da91a3a2c12396805c 100644
+index 9ef6712c70fcd8912a79f3f61e351aac09572cf3..30c0d23c259269cba433746c14fe01a0270c33d7 100644
 --- a/src/main/java/io/papermc/paper/configuration/Configurations.java
 +++ b/src/main/java/io/papermc/paper/configuration/Configurations.java
 @@ -101,7 +101,8 @@ public abstract class Configurations<G, W> {
@@ -27,7 +22,7 @@ index 9ef6712c70fcd8912a79f3f61e351aac09572cf3..5504ce65926c99c21101d4da91a3a2c1
  
 -    private void trySaveFileNode(YamlConfigurationLoader loader, ConfigurationNode node, String filename) throws ConfigurateException {
 +    private void trySaveFileNode(YamlConfigurationLoader loader, ConfigurationNode node, String filename, boolean newFile) throws ConfigurateException {
-+        if (!newFile) return; // TrueOG - never rewrite an existing configuration file, only generate a missing one
++        if (!newFile) return; // TrueOG
          try {
              loader.save(node);
          } catch (ConfigurateException ex) {
@@ -58,16 +53,15 @@ index 9ef6712c70fcd8912a79f3f61e351aac09572cf3..5504ce65926c99c21101d4da91a3a2c1
      }
  
      private DefaultWorldLoader createDefaultWorldLoader(final boolean requireFile, final ContextMap contextMap, final Path configFile) {
-@@ -197,7 +199,7 @@ public abstract class Configurations<G, W> {
+@@ -197,7 +199,6 @@ public abstract class Configurations<G, W> {
          final Path worldConfigFile = dir.resolve(this.worldConfigFileName);
          if (Files.notExists(worldConfigFile)) {
              PaperConfigurations.createDirectoriesSymlinkAware(dir);
 -            Files.createFile(worldConfigFile); // create empty file as template
-+            //Files.createFile(worldConfigFile); // create empty file as template // TrueOG - written below only because it is new; the loader treats a missing file as empty
              newFile = true;
          }
  
-@@ -211,7 +213,7 @@ public abstract class Configurations<G, W> {
+@@ -211,7 +212,7 @@ public abstract class Configurations<G, W> {
          }
          this.applyWorldConfigTransformations(contextMap, worldNode);
          this.applyDefaultsAwareWorldConfigTransformations(contextMap, worldNode, defaultsNode);
@@ -136,7 +130,7 @@ index cdbf10339a8e8846a8c364de483a0ccd95cd225a..e4f92a0237e08c6a07da2b1c73de38c1
  
              dedicatedserversettings.forceSave();
 diff --git a/src/main/java/net/minecraft/server/commands/WhitelistCommand.java b/src/main/java/net/minecraft/server/commands/WhitelistCommand.java
-index 0f1d7d2185182b27a7624c1f255c0f36e2349ad1..10aa9c527c2ff79808c599a43db3b55e9f8b6712 100644
+index 0f1d7d2185182b27a7624c1f255c0f36e2349ad1..f25afd0026f40a62a95c3be1404f3825c018acfb 100644
 --- a/src/main/java/net/minecraft/server/commands/WhitelistCommand.java
 +++ b/src/main/java/net/minecraft/server/commands/WhitelistCommand.java
 @@ -5,6 +5,7 @@ import com.mojang.brigadier.CommandDispatcher;
@@ -164,7 +158,7 @@ index 0f1d7d2185182b27a7624c1f255c0f36e2349ad1..10aa9c527c2ff79808c599a43db3b55e
          }
      }
  
-+    // TrueOG start - server.properties is never rewritten, so the change only lives until the next restart
++    // TrueOG start
 +    private static void warnNotPersisted(CommandSourceStack source, boolean enabled) {
 +        source.sendSuccess(Component.literal("This only lasts until the next restart: server.properties is never rewritten in this build, set white-list=" + enabled + " there to keep it").withStyle(ChatFormatting.YELLOW), false);
 +    }
@@ -174,32 +168,32 @@ index 0f1d7d2185182b27a7624c1f255c0f36e2349ad1..10aa9c527c2ff79808c599a43db3b55e
          String[] strings = source.getServer().getPlayerList().getWhiteListNames();
          if (strings.length == 0) {
 diff --git a/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java b/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
-index 8d029ff40a35004ba6a9c5f5879444f46b2b60ac..fe5872a4517ae4cd35323963c7a98df11512ed74 100644
+index 8d029ff40a35004ba6a9c5f5879444f46b2b60ac..5ddfa17568909cdc663a61b0dc487a8eabdbe778 100644
 --- a/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
 +++ b/src/main/java/net/minecraft/server/dedicated/DedicatedServerSettings.java
 @@ -25,11 +25,12 @@ public class DedicatedServerSettings {
      }
  
      public void forceSave() {
-+        if (java.nio.file.Files.exists(this.source)) return; // TrueOG - never rewrite an existing server.properties, only generate a missing one
++        if (java.nio.file.Files.exists(this.source)) return; // TrueOG
          this.properties.store(this.source);
      }
  
      public DedicatedServerSettings update(UnaryOperator<DedicatedServerProperties> applier) {
 -        (this.properties = (DedicatedServerProperties) applier.apply(this.properties)).store(this.source);
-+        this.properties = (DedicatedServerProperties) applier.apply(this.properties); // TrueOG - applied in memory only; server.properties is never rewritten
++        this.properties = (DedicatedServerProperties) applier.apply(this.properties); // TrueOG - Apply without persisting.
          return this;
      }
  }
 diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
-index 3310828edcabd2c24e3200dcb89d4e8ebd82cf16..01137e7000bd24f80f329aa577e606db52fd9e3c 100644
+index 3310828edcabd2c24e3200dcb89d4e8ebd82cf16..37f1c7159f432c21e450afdf087a3199ee1c31ea 100644
 --- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
 +++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
 @@ -280,6 +280,10 @@ public final class CraftServer implements Server {
      private final Map<Class<?>, Registry<?>> registries = new HashMap<>();
      private YamlConfiguration configuration;
      private YamlConfiguration commandsConfiguration;
-+    // TrueOG start - only a bukkit.yml / commands.yml that did not exist at startup is ever written
++    // TrueOG start
 +    private final boolean configurationNewlyCreated;
 +    private final boolean commandsConfigurationNewlyCreated;
 +    // TrueOG end
@@ -219,7 +213,7 @@ index 3310828edcabd2c24e3200dcb89d4e8ebd82cf16..01137e7000bd24f80f329aa577e606db
      }
  
      private void saveConfig() {
-+        if (!this.configurationNewlyCreated) return; // TrueOG - never rewrite an existing bukkit.yml
++        if (!this.configurationNewlyCreated) return; // TrueOG
          try {
              this.configuration.save(this.getConfigFile());
          } catch (IOException ex) {
@@ -227,19 +221,19 @@ index 3310828edcabd2c24e3200dcb89d4e8ebd82cf16..01137e7000bd24f80f329aa577e606db
      }
  
      private void saveCommandsConfig() {
-+        if (!this.commandsConfigurationNewlyCreated) return; // TrueOG - never rewrite an existing commands.yml
++        if (!this.commandsConfigurationNewlyCreated) return; // TrueOG
          try {
              this.commandsConfiguration.save(this.getCommandsConfigFile());
          } catch (IOException ex) {
 diff --git a/src/main/java/org/purpurmc/purpur/PurpurConfig.java b/src/main/java/org/purpurmc/purpur/PurpurConfig.java
-index be8b44daa0141151c973917a774aa07721647ed1..0af6fbcc0b1401827874693a0a17028576fb8260 100644
+index be8b44daa0141151c973917a774aa07721647ed1..d7cafbc4f42f26bd966a5db71b7de4f8cf84bd5a 100644
 --- a/src/main/java/org/purpurmc/purpur/PurpurConfig.java
 +++ b/src/main/java/org/purpurmc/purpur/PurpurConfig.java
 @@ -51,6 +51,7 @@ public class PurpurConfig {
              + "Website: https://purpurmc.org \n"
              + "Docs: https://purpurmc.org/docs \n";
      private static File CONFIG_FILE;
-+    private static boolean newlyCreated; // TrueOG - only a purpur.yml that did not exist when it was loaded is ever written
++    private static boolean newlyCreated; // TrueOG
      public static YamlConfiguration config;
  
      private static Map<String, Command> commands;
@@ -255,19 +249,19 @@ index be8b44daa0141151c973917a774aa07721647ed1..0af6fbcc0b1401827874693a0a170285
              }
          }
  
-+        if (!newlyCreated) return; // TrueOG - never rewrite an existing purpur.yml
++        if (!newlyCreated) return; // TrueOG
          try {
              config.save(CONFIG_FILE);
          } catch (IOException ex) {
 diff --git a/src/main/java/org/spigotmc/SpigotConfig.java b/src/main/java/org/spigotmc/SpigotConfig.java
-index 612c3169c3463d702b85975e1db79ae6e47d60d0..bed77ccd8fd917dd98600ce289a2dcf2fbb283ca 100644
+index 612c3169c3463d702b85975e1db79ae6e47d60d0..102fd3c778b43501315c972a3117f9e868c89444 100644
 --- a/src/main/java/org/spigotmc/SpigotConfig.java
 +++ b/src/main/java/org/spigotmc/SpigotConfig.java
 @@ -45,6 +45,7 @@ public class SpigotConfig
              + "Forums: http://www.spigotmc.org/\n";
      /*========================================================================*/
      public static YamlConfiguration config;
-+    private static boolean newlyCreated; // TrueOG - only a spigot.yml that did not exist when it was loaded is ever written
++    private static boolean newlyCreated; // TrueOG
      static int version;
      static Map<String, Command> commands;
      /*========================================================================*/
@@ -283,7 +277,7 @@ index 612c3169c3463d702b85975e1db79ae6e47d60d0..bed77ccd8fd917dd98600ce289a2dcf2
      }
      public static void save() {
          // Paper end
-+        if (!SpigotConfig.newlyCreated) return; // TrueOG - never rewrite an existing spigot.yml
++        if (!SpigotConfig.newlyCreated) return; // TrueOG
          try
          {
              SpigotConfig.config.save( CONFIG_FILE );

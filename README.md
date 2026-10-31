@@ -1,4 +1,4 @@
-# true-og/Purpur
+# trueog/Purpur
 
 A fork of [Purpur](https://github.com/PurpurMC/Purpur) 1.19.4 maintained by [TrueOG Network](https://trueog.net) with small quality-of-life patches for our server. (Purpur is itself a fork of [Paper](https://github.com/PaperMC/Paper).)
 
@@ -10,7 +10,7 @@ A fork of [Purpur](https://github.com/PurpurMC/Purpur) 1.19.4 maintained by [Tru
 
 EXPERIMENTAL (may break things):
 
-- Stores player data in RocksDB (`world/playerdatadb`) instead of `.dat` files. A plugin-facing `PlayerDataApi` (reached via `PlayerDataStorage#api()`) exposes `get`/`saveAll`/`has`/`seen`/`drop`/`copy`/`flush`; corrupt stored data refuses the login instead of handing out a fresh profile, and dropping a world with no stored data is treated as success. The replaced revision of the default profile is kept under a `previous` column family as a manual recovery net. Plugins reach all of this through [Utilities-OG](https://github.com/true-og/Utilities-OG), never the fork API directly.
+- Stores player data in RocksDB (`world/playerdatadb`) instead of `.dat` files. A plugin-facing `PlayerDataApi` (reached via `PlayerDataStorage#api()`) exposes `get`/`saveAll`/`has`/`seen`/`drop`/`copy`/`flush`; corrupt stored data refuses the login instead of handing out a fresh profile, and dropping a world with no stored data is treated as success. The replaced revision of the default profile is kept under a `previous` column family as a manual recovery net. Plugins reach all of this through [Utilities-OG](https://git.trueog.net/trueog/Utilities-OG), never the fork API directly.
 
 ## Building
 
